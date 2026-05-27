@@ -6,11 +6,13 @@ import {
   Eye,
   FileDown,
   FlaskConical,
+  LogOut,
   Plus,
   Search,
   Trash2,
   Upload,
 } from "lucide-react";
+import { isSupabaseReady, supabase } from "./src/lib/supabase";
 
 const KEY = "homelizan_tests_clean_v1";
 const OLD_KEYS = [
@@ -49,6 +51,17 @@ const pdfDefaults = {
   includeDate: true,
   includeStatusColors: true,
 };
+const SUPABASE_FALLBACK_TEXT = "Supabase bağlantı hatası. Yerel yedek kullanılabilir.";
+
+function supabaseErrorText(err) {
+  const message =
+    err?.message ||
+    err?.error_description ||
+    err?.details ||
+    err?.hint ||
+    (typeof err === "string" ? err : "");
+  return message ? `${SUPABASE_FALLBACK_TEXT} (${message})` : SUPABASE_FALLBACK_TEXT;
+}
 
 const blank = {
   id: null,
@@ -171,6 +184,38 @@ function normalize(t = {}) {
   };
 }
 
+function loadLocalBackup() {
+  try {
+    const primary = localStorage.getItem(KEY);
+    const fallback = OLD_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
+    const raw = primary || fallback;
+    const parsed = raw ? safeParse(raw) : null;
+    return Array.isArray(parsed) ? parsed.map(normalize) : [];
+  } catch (e) {
+    console.error("Yerel yedek okunamadı", e);
+    return [];
+  }
+}
+
+function toDbRow(t) {
+  return {
+    id: t.id,
+    date: t.date || blank.date,
+    testName: clean(t.testName),
+    essence: clean(t.essence),
+    alcohol: clean(t.alcohol),
+    formula: shortFormula(t.formula || "Etil+Esans"),
+    totalMl: n(t.totalMl) || 40,
+    essencePct: t.essencePct === "" ? null : n(t.essencePct),
+    alcoholPct: t.alcoholPct === "" ? null : n(t.alcoholPct),
+    dpmPct: t.dpmPct === "" ? null : n(t.dpmPct),
+    dpgPct: t.dpgPct === "" ? null : n(t.dpgPct),
+    augeoPct: t.augeoPct === "" ? null : n(t.augeoPct),
+    status: statusSet.has(t.status) ? t.status : "Takipte",
+    notes: String(t.notes || "").trim(),
+  };
+}
+
 function Card({ children, className = "" }) {
   return (
     <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}>
@@ -218,18 +263,84 @@ export default function HomelizanEssenceTestTracker() {
   const [pdfOpen, setPdfOpen] = useState(false);
   const [pdfOptions, setPdfOptions] = useState(pdfDefaults);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [supabaseError, setSupabaseError] = useState("");
+  const [authReady, setAuthReady] = useState(false);
+  const [user, setUser] = useState(null);
+  const [authMode, setAuthMode] = useState("signin");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authForm, setAuthForm] = useState({ email: "", password: "" });
+  const connectionStatus = !loading && !supabaseError;
 
   useEffect(() => {
-    try {
-      const primary = localStorage.getItem(KEY);
-      const fallback = OLD_KEYS.map((k) => localStorage.getItem(k)).find(Boolean);
-      const raw = primary || fallback;
-      const parsed = raw ? safeParse(raw) : null;
-      if (Array.isArray(parsed)) setTests(parsed.map(normalize));
-    } catch (e) {
-      console.error("Kayıtlar okunamadı", e);
+    let active = true;
+    async function initAuth() {
+      if (!isSupabaseReady) {
+        if (!active) return;
+        setAuthReady(true);
+        setUser(null);
+        return;
+      }
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      setUser(data?.session?.user ?? null);
+      setAuthReady(true);
     }
+    initAuth();
+    const { data: sub } = isSupabaseReady
+      ? supabase.auth.onAuthStateChange((_event, session) => {
+          setUser(session?.user ?? null);
+          setAuthReady(true);
+        })
+      : { data: null };
+    return () => {
+      active = false;
+      sub?.subscription?.unsubscribe?.();
+    };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    async function loadTests() {
+      if (!authReady) return;
+      if (!isSupabaseReady) {
+        if (!active) return;
+        setTests(loadLocalBackup());
+        setSupabaseError(`${SUPABASE_FALLBACK_TEXT} (VITE_SUPABASE_URL veya VITE_SUPABASE_ANON_KEY eksik)`);
+        setLoading(false);
+        return;
+      }
+      if (!user) {
+        if (!active) return;
+        setTests([]);
+        setSupabaseError("");
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setSupabaseError("");
+      const localBackup = loadLocalBackup();
+      try {
+        const { data, error } = await supabase.from("tests").select("*").order("date", { ascending: false });
+        if (error) throw error;
+        if (!active) return;
+        const remote = Array.isArray(data) ? data.map(normalize) : [];
+        setTests(remote);
+      } catch (e) {
+        console.error("Supabase kayıtları alınamadı", e);
+        if (!active) return;
+        setTests(localBackup);
+        setSupabaseError(supabaseErrorText(e));
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    loadTests();
+    return () => {
+      active = false;
+    };
+  }, [authReady, user]);
 
   useEffect(() => {
     try {
@@ -342,6 +453,18 @@ export default function HomelizanEssenceTestTracker() {
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   }
 
+  function applyLocalUpsert(item) {
+    setTests((old) =>
+      old.some((x) => x.id === item.id)
+        ? old.map((x) => (x.id === item.id ? item : x))
+        : [item, ...old],
+    );
+  }
+
+  function applyLocalDelete(testId) {
+    setTests((old) => old.filter((x) => x.id !== testId));
+  }
+
   function summaryBy(list, field) {
     const map = new Map();
     list.forEach((t) => {
@@ -359,7 +482,7 @@ export default function HomelizanEssenceTestTracker() {
     return [...map.values()].sort((a, b) => b.total - a.total);
   }
 
-  function save() {
+  async function save() {
     const item = normalize({
       ...form,
       essenceMl: calc.essenceMl,
@@ -369,11 +492,23 @@ export default function HomelizanEssenceTestTracker() {
       augeoMl: calc.augeoMl,
       id: form.id || uid(),
     });
-    setTests((old) =>
-      old.some((x) => x.id === item.id)
-        ? old.map((x) => (x.id === item.id ? item : x))
-        : [item, ...old],
-    );
+    const exists = tests.some((x) => x.id === item.id);
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      if (exists) {
+        const { error } = await supabase.from("tests").update(toDbRow(item)).eq("id", item.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("tests").insert([toDbRow(item)]);
+        if (error) throw error;
+      }
+      setSupabaseError("");
+      applyLocalUpsert(item);
+    } catch (e) {
+      console.error("Supabase kaydetme hatası", e);
+      setSupabaseError(supabaseErrorText(e));
+      applyLocalUpsert(item);
+    }
     setSelectedId(item.id);
     setForm(blank);
   }
@@ -385,7 +520,7 @@ export default function HomelizanEssenceTestTracker() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function duplicate(t) {
+  async function duplicate(t) {
     const copy = normalize({
       ...t,
       id: uid(),
@@ -393,12 +528,32 @@ export default function HomelizanEssenceTestTracker() {
       date: blank.date,
       status: "Takipte",
     });
-    setTests((old) => [copy, ...old]);
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase.from("tests").insert([toDbRow(copy)]);
+      if (error) throw error;
+      setSupabaseError("");
+      applyLocalUpsert(copy);
+    } catch (e) {
+      console.error("Supabase kopyalama hatası", e);
+      setSupabaseError(supabaseErrorText(e));
+      applyLocalUpsert(copy);
+    }
     setSelectedId(copy.id);
   }
 
-  function remove(testId) {
-    setTests((old) => old.filter((x) => x.id !== testId));
+  async function remove(testId) {
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase.from("tests").delete().eq("id", testId);
+      if (error) throw error;
+      setSupabaseError("");
+      applyLocalDelete(testId);
+    } catch (e) {
+      console.error("Supabase silme hatası", e);
+      setSupabaseError(supabaseErrorText(e));
+      applyLocalDelete(testId);
+    }
     if (selectedId === testId) setSelectedId(null);
   }
 
@@ -836,15 +991,29 @@ export default function HomelizanEssenceTestTracker() {
     }
   }
 
+  async function importTestsToSupabase(list) {
+    if (!isSupabaseReady) throw new Error("supabase_not_ready");
+    const rows = list.map(toDbRow);
+    const { error } = await supabase.from("tests").upsert(rows, { onConflict: "id" });
+    if (error) throw error;
+  }
+
   function importJson(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const data = safeParse(String(reader.result));
         if (!Array.isArray(data)) throw new Error("bad_json");
         const next = data.map(normalize);
+        try {
+          await importTestsToSupabase(next);
+          setSupabaseError("");
+        } catch (supErr) {
+          console.error("Supabase import hatası", supErr);
+          setSupabaseError(supabaseErrorText(supErr));
+        }
         setTests(next);
         setSelectedId(next[0]?.id ?? null);
       } catch {
@@ -856,10 +1025,97 @@ export default function HomelizanEssenceTestTracker() {
     reader.readAsText(file);
   }
 
+  function setAuthField(field, value) {
+    setAuthForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function submitAuth() {
+    if (!isSupabaseReady) {
+      setAuthError("Supabase ayarları eksik. .env.local dosyasını kontrol et.");
+      return;
+    }
+    const email = clean(authForm.email);
+    const password = String(authForm.password || "");
+    if (!email || password.length < 6) {
+      setAuthError("E-posta ve en az 6 karakter şifre gir.");
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      if (authMode === "signin") {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        if (!data.session) {
+          setAuthError("Kayıt oluşturuldu. Giriş için e-posta doğrulamasını tamamla.");
+        }
+      }
+    } catch (e) {
+      setAuthError(e?.message || "Giriş işlemi başarısız.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function logout() {
+    if (!isSupabaseReady) return;
+    await supabase.auth.signOut();
+  }
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-stone-100 p-4 font-sans text-slate-900 md:p-8">
+        <div className="mx-auto max-w-md">
+          <Card className="rounded-2xl p-6 text-center text-sm font-semibold text-slate-600">
+            Oturum kontrol ediliyor...
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-stone-100 p-4 font-sans text-slate-900 md:p-8">
+        <div className="mx-auto max-w-md">
+          <AuthPanel
+            mode={authMode}
+            setMode={setAuthMode}
+            form={authForm}
+            setField={setAuthField}
+            onSubmit={submitAuth}
+            loading={authLoading}
+            error={authError}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-stone-100 p-4 font-sans text-slate-900 md:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        <Header exportJson={exportJson} onOpenPdf={() => setPdfOpen(true)} importJson={importJson} />
+        <Header
+          exportJson={exportJson}
+          onOpenPdf={() => setPdfOpen(true)}
+          importJson={importJson}
+          connectionStatus={connectionStatus}
+          onLogout={logout}
+          userEmail={user?.email || ""}
+        />
+        {loading && (
+          <Card className="rounded-2xl px-4 py-3 text-sm font-semibold text-slate-600">
+            Kayıtlar yükleniyor...
+          </Card>
+        )}
+        {supabaseError && (
+          <Card className="rounded-2xl border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+            {supabaseError}
+          </Card>
+        )}
         <Tabs page={page} setPage={setPage} />
         <Stats stats={stats} />
         <PdfExportModal
@@ -930,18 +1186,33 @@ export default function HomelizanEssenceTestTracker() {
   );
 }
 
-function Header({ exportJson, onOpenPdf, importJson }) {
+function Header({ exportJson, onOpenPdf, importJson, connectionStatus, onLogout, userEmail }) {
+  const statusStyle = connectionStatus
+    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+    : "bg-rose-50 text-rose-700 border-rose-200";
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
       <div>
-        <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm font-bold text-slate-700 shadow-sm md:text-base">
-          <FlaskConical className="h-4 w-4 md:h-5 md:w-5" /> Homelizan Essence Lab Tracker
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm font-bold text-slate-700 shadow-sm md:text-base">
+            <FlaskConical className="h-4 w-4 md:h-5 md:w-5" /> Homelizan Essence Lab Tracker
+          </div>
+          <div
+            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold ${statusStyle}`}
+            aria-label={connectionStatus ? "Supabase bağlı" : "Supabase bağlantı hatası"}
+            title={connectionStatus ? "Supabase bağlı" : "Supabase bağlantı hatası"}
+          >
+            <span className="h-2 w-2 rounded-full bg-current" />
+          </div>
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-800 md:text-4xl">
           Reed Diffuser Test Takip Paneli
         </h1>
       </div>
       <div className="flex flex-wrap gap-2">
+        <span className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-500">
+          {userEmail}
+        </span>
         <Button variant="outline" onClick={onOpenPdf}>
           <FileDown className="h-4 w-4" /> PDF Rapor İndir
         </Button>
@@ -952,8 +1223,72 @@ function Header({ exportJson, onOpenPdf, importJson }) {
           <Upload className="h-4 w-4" /> Yedek Yükle
           <input type="file" accept="application/json" className="hidden" onChange={importJson} />
         </label>
+        <Button variant="outline" onClick={onLogout}>
+          <LogOut className="h-4 w-4" /> Çıkış
+        </Button>
       </div>
     </div>
+  );
+}
+
+function AuthPanel({ mode, setMode, form, setField, onSubmit, loading, error }) {
+  return (
+    <Card className="rounded-2xl p-6 md:p-7">
+      <div className="mb-5">
+        <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-600">
+          <FlaskConical className="h-4 w-4" /> Homelizan Essence Lab Tracker
+        </div>
+        <h2 className="text-2xl font-black text-slate-900">Giriş Paneli</h2>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
+        <button
+          type="button"
+          onClick={() => setMode("signin")}
+          className={`rounded-lg px-3 py-2 text-sm font-bold ${
+            mode === "signin" ? "bg-slate-900 text-white" : "text-slate-600"
+          }`}
+        >
+          Giriş Yap
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("signup")}
+          className={`rounded-lg px-3 py-2 text-sm font-bold ${
+            mode === "signup" ? "bg-slate-900 text-white" : "text-slate-600"
+          }`}
+        >
+          Kayıt Ol
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        <Field label="E-posta">
+          <input
+            className={input}
+            type="email"
+            value={form.email}
+            onChange={(e) => setField("email", e.target.value)}
+            placeholder="ornek@mail.com"
+          />
+        </Field>
+        <Field label="Şifre">
+          <input
+            className={input}
+            type="password"
+            value={form.password}
+            onChange={(e) => setField("password", e.target.value)}
+            placeholder="******"
+          />
+        </Field>
+      </div>
+
+      {error && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">{error}</p>}
+
+      <Button className="mt-4 w-full py-3" onClick={onSubmit} disabled={loading}>
+        {loading ? "İşleniyor..." : mode === "signin" ? "Giriş Yap" : "Kayıt Ol"}
+      </Button>
+    </Card>
   );
 }
 
