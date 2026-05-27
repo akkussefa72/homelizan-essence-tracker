@@ -1644,8 +1644,8 @@ function PdfExportModal({
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4">
-      <Card className="w-full max-w-3xl rounded-2xl p-5 md:p-6">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/35 p-3 md:p-4">
+      <Card className="mx-auto my-2 flex w-full max-w-3xl max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-2xl p-4 md:my-6 md:max-h-[calc(100dvh-3rem)] md:p-6">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h3 className="text-xl font-black">PDF Rapor Ayarları</h3>
@@ -1656,7 +1656,7 @@ function PdfExportModal({
           </Button>
         </div>
 
-        <div className="space-y-5">
+        <div className="flex-1 space-y-5 overflow-y-auto pr-1">
           <div className="grid gap-3 md:grid-cols-3">
             {reportTypes.map((type) => (
               <button
@@ -1739,7 +1739,7 @@ function PdfExportModal({
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap justify-end gap-2">
+        <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-100 bg-white pt-3">
           <Button variant="outline" onClick={onClose} disabled={loading}>
             Vazgeç
           </Button>
@@ -1754,23 +1754,30 @@ function PdfExportModal({
 
 function Tabs({ page, setPage }) {
   return (
-    <div className="flex w-fit flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+    <div className="grid w-full grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm md:flex md:w-fit md:flex-wrap">
       <Button
+        className="w-full md:w-auto"
         variant={page === "formulaRecord" ? "solid" : "ghost"}
         onClick={() => setPage("formulaRecord")}
       >
         <Plus className="h-4 w-4" /> Formül Kayıtları
       </Button>
       <Button
+        className="w-full md:w-auto"
         variant={page === "formulaAnalysis" ? "solid" : "ghost"}
         onClick={() => setPage("formulaAnalysis")}
       >
         <BarChart3 className="h-4 w-4" /> Formül Analizi
       </Button>
-      <Button variant={page === "sampleRecord" ? "solid" : "ghost"} onClick={() => setPage("sampleRecord")}>
+      <Button
+        className="w-full md:w-auto"
+        variant={page === "sampleRecord" ? "solid" : "ghost"}
+        onClick={() => setPage("sampleRecord")}
+      >
         <Plus className="h-4 w-4" /> Numune Yayılım Testi
       </Button>
       <Button
+        className="w-full md:w-auto"
         variant={page === "sampleAnalysis" ? "solid" : "ghost"}
         onClick={() => setPage("sampleAnalysis")}
       >
