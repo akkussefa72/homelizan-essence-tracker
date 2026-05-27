@@ -52,6 +52,62 @@ const pdfDefaults = {
   includeStatusColors: true,
 };
 const SUPABASE_FALLBACK_TEXT = "Supabase bağlantı hatası. Yerel yedek kullanılabilir.";
+const SAMPLE_KEY = "homelizan_sample_tests_v1";
+const sampleBlank = {
+  id: null,
+  name: "",
+  smallRoom: 0,
+  bathroom: 0,
+  largeRoom: 0,
+  continuity: 0,
+  notes: "",
+};
+const sampleBands = {
+  smallRoom: {
+    title: "Küçük-Orta Oda Yayılımı",
+    max: 25,
+    lines: [
+      { text: "Çok zayıf, burna zor geliyor", range: "1-5", recommended: 3 },
+      { text: "Hissediliyor ama zayıf", range: "6-10", recommended: 8 },
+      { text: "Net hissediliyor", range: "11-15", recommended: 13 },
+      { text: "Güçlü ve tatmin edici", range: "16-20", recommended: 18 },
+      { text: "Küçük-orta odayı rahat dolduruyor", range: "21-25", recommended: 23 },
+    ],
+  },
+  bathroom: {
+    title: "Banyo Yayılımı",
+    max: 20,
+    lines: [
+      { text: "Çok zayıf, burna zor geliyor", range: "1-4", recommended: 3 },
+      { text: "Hissediliyor ama zayıf", range: "5-8", recommended: 6 },
+      { text: "Net hissediliyor", range: "9-12", recommended: 10 },
+      { text: "Güçlü ve tatmin edici", range: "13-16", recommended: 14 },
+      { text: "Banyoyu rahat dolduruyor", range: "17-20", recommended: 18 },
+    ],
+  },
+  largeRoom: {
+    title: "Büyük Oda Yayılımı",
+    max: 35,
+    lines: [
+      { text: "Neredeyse yayılmıyor", range: "1-7", recommended: 4 },
+      { text: "Sadece yakından hissediliyor", range: "8-14", recommended: 11 },
+      { text: "Odaya girince hafif fark ediliyor", range: "15-21", recommended: 18 },
+      { text: "Odayı dengeli şekilde dolduruyor", range: "22-28", recommended: 25 },
+      { text: "Büyük odada net ve güçlü yayılıyor", range: "29-35", recommended: 32 },
+    ],
+  },
+  continuity: {
+    title: "12-24 Saat Yayılım Devamlılığı",
+    max: 20,
+    lines: [
+      { text: "İlk saatten sonra ciddi düşüyor", range: "1-4", recommended: 3 },
+      { text: "6-12 saat içinde belirgin zayıflıyor", range: "5-8", recommended: 6 },
+      { text: "12-24 saate kadar kabul edilebilir kalıyor", range: "9-12", recommended: 10 },
+      { text: "24 saat boyunca dengeli hissediliyor", range: "13-16", recommended: 14 },
+      { text: "24 saat sonunda hâlâ net yayılım var", range: "17-20", recommended: 18 },
+    ],
+  },
+};
 
 function supabaseErrorText(err) {
   const message =
@@ -216,6 +272,40 @@ function toDbRow(t) {
   };
 }
 
+function normalizeSample(row = {}) {
+  return {
+    ...sampleBlank,
+    ...row,
+    id: row.id || uid(),
+    name: clean(row.name),
+    smallRoom: n(row.smallRoom),
+    bathroom: n(row.bathroom),
+    largeRoom: n(row.largeRoom),
+    continuity: n(row.continuity),
+    notes: String(row.notes || "").trim(),
+  };
+}
+
+function sampleTotal(t) {
+  return n(t.smallRoom) + n(t.bathroom) + n(t.largeRoom) + n(t.continuity);
+}
+
+function sampleDecision(total) {
+  if (total >= 85) return "Güçlü yayılım, satışa uygun";
+  if (total >= 75) return "İyi yayılım, tekrar test edilebilir";
+  if (total >= 65) return "Orta yayılım, dikkatli değerlendir";
+  if (total >= 55) return "Zayıf yayılım, revize gerekebilir";
+  return "Eleme adayı";
+}
+
+function sampleDecisionTone(total) {
+  if (total >= 85) return "bg-emerald-100 text-emerald-700 border-emerald-200";
+  if (total >= 75) return "bg-sky-100 text-sky-700 border-sky-200";
+  if (total >= 65) return "bg-violet-100 text-violet-700 border-violet-200";
+  if (total >= 55) return "bg-amber-100 text-amber-700 border-amber-200";
+  return "bg-rose-100 text-rose-700 border-rose-200";
+}
+
 function Card({ children, className = "" }) {
   return (
     <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}>
@@ -251,7 +341,7 @@ function Badge({ children, status }) {
 export default function HomelizanEssenceTestTracker() {
   const [tests, setTests] = useState([]);
   const [form, setForm] = useState(blank);
-  const [page, setPage] = useState("record");
+  const [page, setPage] = useState("formulaRecord");
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("Tümü");
   const [sortBy, setSortBy] = useState("date");
@@ -271,6 +361,15 @@ export default function HomelizanEssenceTestTracker() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authForm, setAuthForm] = useState({ email: "", password: "" });
+  const [sampleTests, setSampleTests] = useState([]);
+  const [sampleLoading, setSampleLoading] = useState(true);
+  const [sampleError, setSampleError] = useState("");
+  const [sampleDraft, setSampleDraft] = useState(sampleBlank);
+  const [sampleSearch, setSampleSearch] = useState("");
+  const [sampleDecisionFilter, setSampleDecisionFilter] = useState("Tümü");
+  const [sampleMin, setSampleMin] = useState("");
+  const [sampleMax, setSampleMax] = useState("");
+  const [sampleAnalysisView, setSampleAnalysisView] = useState("summary");
   const connectionStatus = !loading && !supabaseError;
 
   useEffect(() => {
@@ -343,12 +442,65 @@ export default function HomelizanEssenceTestTracker() {
   }, [authReady, user]);
 
   useEffect(() => {
+    let active = true;
+    async function loadSampleTests() {
+      if (!authReady) return;
+      if (!isSupabaseReady) {
+        if (!active) return;
+        const local = safeParse(localStorage.getItem(SAMPLE_KEY) || "[]");
+        setSampleTests(Array.isArray(local) ? local.map(normalizeSample) : []);
+        setSampleError(`${SUPABASE_FALLBACK_TEXT} (sample_tests)`);
+        setSampleLoading(false);
+        return;
+      }
+      if (!user) {
+        if (!active) return;
+        setSampleTests([]);
+        setSampleError("");
+        setSampleLoading(false);
+        return;
+      }
+      setSampleLoading(true);
+      setSampleError("");
+      try {
+        const { data, error } = await supabase
+          .from("sample_tests")
+          .select("*")
+          .order("updated_at", { ascending: false });
+        if (error) throw error;
+        if (!active) return;
+        setSampleTests(Array.isArray(data) ? data.map(normalizeSample) : []);
+      } catch (e) {
+        console.error("sample_tests okunamadı", e);
+        if (!active) return;
+        const local = safeParse(localStorage.getItem(SAMPLE_KEY) || "[]");
+        setSampleTests(Array.isArray(local) ? local.map(normalizeSample) : []);
+        setSampleError(supabaseErrorText(e));
+      } finally {
+        if (active) setSampleLoading(false);
+      }
+    }
+    loadSampleTests();
+    return () => {
+      active = false;
+    };
+  }, [authReady, user]);
+
+  useEffect(() => {
     try {
       localStorage.setItem(KEY, JSON.stringify(tests));
     } catch (e) {
       console.error("Kayıtlar yazılamadı", e);
     }
   }, [tests]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAMPLE_KEY, JSON.stringify(sampleTests));
+    } catch (e) {
+      console.error("Numune yedeği yazılamadı", e);
+    }
+  }, [sampleTests]);
 
   const update = (field, value) => setForm((p) => ({ ...p, [field]: value }));
   const totalPct = pctTotal(form);
@@ -440,6 +592,54 @@ export default function HomelizanEssenceTestTracker() {
     success: tests.filter((t) => t.status === "Başarılı").length,
   };
 
+  const sampleFiltered = useMemo(() => {
+    const s = sampleSearch.toLowerCase().trim();
+    const min = sampleMin === "" ? null : n(sampleMin);
+    const max = sampleMax === "" ? null : n(sampleMax);
+    return sampleTests
+      .filter((x) => (!s ? true : `${x.name} ${x.notes}`.toLowerCase().includes(s)))
+      .filter((x) => {
+        const decision = sampleDecision(sampleTotal(x));
+        return sampleDecisionFilter === "Tümü" ? true : decision === sampleDecisionFilter;
+      })
+      .filter((x) => (min === null ? true : sampleTotal(x) >= min))
+      .filter((x) => (max === null ? true : sampleTotal(x) <= max))
+      .sort((a, b) => sampleTotal(b) - sampleTotal(a));
+  }, [sampleTests, sampleSearch, sampleDecisionFilter, sampleMin, sampleMax]);
+
+  const sampleSummary = useMemo(() => {
+    const total = sampleTests.length;
+    const totalScore = sampleTests.reduce((sum, x) => sum + sampleTotal(x), 0);
+    const best = [...sampleTests].sort((a, b) => sampleTotal(b) - sampleTotal(a))[0] || null;
+    const counts = {
+      strong: 0,
+      good: 0,
+      medium: 0,
+      weak: 0,
+      rejected: 0,
+    };
+    sampleTests.forEach((x) => {
+      const score = sampleTotal(x);
+      if (score >= 85) counts.strong += 1;
+      else if (score >= 75) counts.good += 1;
+      else if (score >= 65) counts.medium += 1;
+      else if (score >= 55) counts.weak += 1;
+      else counts.rejected += 1;
+    });
+    const avgBy = (field) =>
+      total ? (sampleTests.reduce((sum, x) => sum + n(x[field]), 0) / total).toFixed(1) : "0.0";
+    return {
+      total,
+      avg: total ? (totalScore / total).toFixed(1) : "0.0",
+      best,
+      counts,
+      avgSmall: avgBy("smallRoom"),
+      avgBath: avgBy("bathroom"),
+      avgLarge: avgBy("largeRoom"),
+      avgContinuity: avgBy("continuity"),
+    };
+  }, [sampleTests]);
+
   function setPdfField(field, value) {
     setPdfOptions((prev) => ({ ...prev, [field]: value }));
   }
@@ -516,7 +716,7 @@ export default function HomelizanEssenceTestTracker() {
   function edit(t) {
     setForm(normalize(t));
     setSelectedId(t.id);
-    setPage("record");
+    setPage("formulaRecord");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -555,6 +755,100 @@ export default function HomelizanEssenceTestTracker() {
       applyLocalDelete(testId);
     }
     if (selectedId === testId) setSelectedId(null);
+  }
+
+  async function saveSample(item) {
+    const next = normalizeSample(item);
+    const payload = {
+      id: next.id || uid(),
+      name: next.name || "İsimsiz Numune",
+      smallRoom: n(next.smallRoom),
+      bathroom: n(next.bathroom),
+      largeRoom: n(next.largeRoom),
+      continuity: n(next.continuity),
+      notes: next.notes || "",
+      updated_at: new Date().toISOString(),
+    };
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase.from("sample_tests").upsert([payload], { onConflict: "id" });
+      if (error) throw error;
+      setSampleError("");
+      const synced = normalizeSample(payload);
+      setSampleTests((old) =>
+        old.some((x) => x.id === synced.id) ? old.map((x) => (x.id === synced.id ? synced : x)) : [synced, ...old],
+      );
+      return synced;
+    } catch (e) {
+      console.error("sample_tests kaydetme hatası", e);
+      setSampleError(supabaseErrorText(e));
+      const synced = normalizeSample(payload);
+      setSampleTests((old) =>
+        old.some((x) => x.id === synced.id) ? old.map((x) => (x.id === synced.id ? synced : x)) : [synced, ...old],
+      );
+      return synced;
+    }
+  }
+
+  async function deleteSample(id) {
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase.from("sample_tests").delete().eq("id", id);
+      if (error) throw error;
+      setSampleError("");
+    } catch (e) {
+      console.error("sample_tests silme hatası", e);
+      setSampleError(supabaseErrorText(e));
+    }
+    setSampleTests((old) => old.filter((x) => x.id !== id));
+  }
+
+  async function exportSampleJson() {
+    const blob = new Blob([JSON.stringify(sampleTests, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `homelizan-numune-testleri-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function importSampleJson(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const data = safeParse(String(reader.result));
+        if (!Array.isArray(data)) throw new Error("bad_json");
+        const next = data.map((x) => normalizeSample({ ...x, id: x.id || uid() }));
+        try {
+          if (!isSupabaseReady) throw new Error("supabase_not_ready");
+          const rows = next.map((x) => ({
+            id: x.id,
+            name: x.name,
+            smallRoom: n(x.smallRoom),
+            bathroom: n(x.bathroom),
+            largeRoom: n(x.largeRoom),
+            continuity: n(x.continuity),
+            notes: x.notes || "",
+            updated_at: new Date().toISOString(),
+          }));
+          const { error } = await supabase.from("sample_tests").upsert(rows, { onConflict: "id" });
+          if (error) throw error;
+          setSampleError("");
+        } catch (supErr) {
+          console.error("sample_tests import hatası", supErr);
+          setSampleError(supabaseErrorText(supErr));
+        }
+        setSampleTests(next);
+      } catch {
+        alert("Numune JSON dosyası okunamadı.");
+      } finally {
+        e.target.value = "";
+      }
+    };
+    reader.readAsText(file);
   }
 
   function exportJson() {
@@ -1117,22 +1411,24 @@ export default function HomelizanEssenceTestTracker() {
           </Card>
         )}
         <Tabs page={page} setPage={setPage} />
-        <Stats stats={stats} />
-        <PdfExportModal
-          open={pdfOpen}
-          onClose={() => !pdfLoading && setPdfOpen(false)}
-          options={pdfOptions}
-          setField={setPdfField}
-          onExport={exportPdf}
-          loading={pdfLoading}
-          essences={essences}
-          alcohols={alcohols}
-          statuses={statuses}
-          allCount={tests.length}
-          analysisCount={analysisTests.length}
-          filteredCount={getExportTests(pdfOptions).length}
-        />
-        {page === "record" ? (
+        {(page === "formulaRecord" || page === "formulaAnalysis") && <Stats stats={stats} />}
+        {page === "formulaRecord" || page === "formulaAnalysis" ? (
+          <PdfExportModal
+            open={pdfOpen}
+            onClose={() => !pdfLoading && setPdfOpen(false)}
+            options={pdfOptions}
+            setField={setPdfField}
+            onExport={exportPdf}
+            loading={pdfLoading}
+            essences={essences}
+            alcohols={alcohols}
+            statuses={statuses}
+            allCount={tests.length}
+            analysisCount={analysisTests.length}
+            filteredCount={getExportTests(pdfOptions).length}
+          />
+        ) : null}
+        {page === "formulaRecord" ? (
           <RecordPage
             {...{
               form,
@@ -1157,7 +1453,8 @@ export default function HomelizanEssenceTestTracker() {
               remove,
             }}
           />
-        ) : (
+        ) : null}
+        {page === "formulaAnalysis" ? (
           <AnalysisPage
             {...{
               analysisTests,
@@ -1180,7 +1477,46 @@ export default function HomelizanEssenceTestTracker() {
               setPage,
             }}
           />
-        )}
+        ) : null}
+        {page === "sampleRecord" ? (
+          <SampleTestPage
+            draft={sampleDraft}
+            setDraft={setSampleDraft}
+            onAdd={async () => {
+              await saveSample({ ...sampleDraft, id: uid() });
+              setSampleDraft(sampleBlank);
+            }}
+            list={sampleTests}
+            loading={sampleLoading}
+            error={sampleError}
+            onSave={saveSample}
+            onDelete={deleteSample}
+            onExportJson={exportSampleJson}
+            onImportJson={importSampleJson}
+          />
+        ) : null}
+        {page === "sampleAnalysis" ? (
+          <SampleAnalysisPage
+            sampleTests={sampleTests}
+            filtered={sampleFiltered}
+            summary={sampleSummary}
+            search={sampleSearch}
+            setSearch={setSampleSearch}
+            decisionFilter={sampleDecisionFilter}
+            setDecisionFilter={setSampleDecisionFilter}
+            min={sampleMin}
+            setMin={setSampleMin}
+            max={sampleMax}
+            setMax={setSampleMax}
+            view={sampleAnalysisView}
+            setView={setSampleAnalysisView}
+            onEditSample={(x) => {
+              setSampleDraft(x);
+              setPage("sampleRecord");
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -1419,14 +1755,26 @@ function PdfExportModal({
 function Tabs({ page, setPage }) {
   return (
     <div className="flex w-fit flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-      <Button variant={page === "record" ? "solid" : "ghost"} onClick={() => setPage("record")}>
-        <Plus className="h-4 w-4" /> Kayıt Sayfası
+      <Button
+        variant={page === "formulaRecord" ? "solid" : "ghost"}
+        onClick={() => setPage("formulaRecord")}
+      >
+        <Plus className="h-4 w-4" /> Formül Kayıtları
       </Button>
       <Button
-        variant={page === "analysis" ? "solid" : "ghost"}
-        onClick={() => setPage("analysis")}
+        variant={page === "formulaAnalysis" ? "solid" : "ghost"}
+        onClick={() => setPage("formulaAnalysis")}
       >
-        <BarChart3 className="h-4 w-4" /> Analiz Sayfası
+        <BarChart3 className="h-4 w-4" /> Formül Analizi
+      </Button>
+      <Button variant={page === "sampleRecord" ? "solid" : "ghost"} onClick={() => setPage("sampleRecord")}>
+        <Plus className="h-4 w-4" /> Numune Yayılım Testi
+      </Button>
+      <Button
+        variant={page === "sampleAnalysis" ? "solid" : "ghost"}
+        onClick={() => setPage("sampleAnalysis")}
+      >
+        <BarChart3 className="h-4 w-4" /> Numune Analizi
       </Button>
     </div>
   );
@@ -1795,7 +2143,7 @@ function AnalysisPage(p) {
 
   const openInRecord = (id) => {
     setSelectedId(id);
-    setPage("record");
+    setPage("formulaRecord");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -2043,6 +2391,346 @@ function DetailTable({ tests, edit }) {
         </table>
       </div>
     </Card>
+  );
+}
+
+const sampleDecisionOptions = [
+  "Güçlü yayılım, satışa uygun",
+  "İyi yayılım, tekrar test edilebilir",
+  "Orta yayılım, dikkatli değerlendir",
+  "Zayıf yayılım, revize gerekebilir",
+  "Eleme adayı",
+];
+
+function SampleScoreField({ item, field, onChange }) {
+  const conf = sampleBands[field];
+  const value = n(item[field]);
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h4 className="font-black text-slate-800">{conf.title}</h4>
+        <span className="text-xs font-bold text-slate-500">/ {conf.max}</span>
+      </div>
+      <input
+        className={input}
+        type="number"
+        min={0}
+        max={conf.max}
+        value={value}
+        onChange={(e) => onChange(field, Math.max(0, Math.min(conf.max, n(e.target.value))))}
+      />
+      <div className="mt-2 space-y-1.5">
+        {conf.lines.map((line) => (
+          <button
+            type="button"
+            key={`${field}-${line.text}`}
+            onClick={() => onChange(field, line.recommended)}
+            className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs hover:bg-white"
+          >
+            <span className="text-slate-600">{line.text}</span>
+            <span className="font-black text-slate-700">{line.range} · {line.recommended}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SampleTestPage({
+  draft,
+  setDraft,
+  onAdd,
+  list,
+  loading,
+  error,
+  onSave,
+  onDelete,
+  onExportJson,
+  onImportJson,
+}) {
+  const [editMap, setEditMap] = useState({});
+  useEffect(() => {
+    setEditMap((old) => {
+      const next = { ...old };
+      list.forEach((x) => {
+        if (!next[x.id]) next[x.id] = normalizeSample(x);
+      });
+      return next;
+    });
+  }, [list]);
+
+  function updateDraft(field, value) {
+    setDraft((p) => normalizeSample({ ...p, [field]: value }));
+  }
+  function updateEdit(id, field, value) {
+    setEditMap((old) => ({ ...old, [id]: normalizeSample({ ...(old[id] || {}), [field]: value, id }) }));
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-5 md:p-6">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-2xl font-black">Numune Yayılım Testi</h2>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={onExportJson}><Download className="h-4 w-4" /> Numune JSON Dışa Aktar</Button>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
+              <Upload className="h-4 w-4" /> Numune JSON İçe Aktar
+              <input type="file" accept="application/json" className="hidden" onChange={onImportJson} />
+            </label>
+          </div>
+        </div>
+        {loading ? <p className="text-sm text-slate-500">Numune kayıtları yükleniyor...</p> : null}
+        {error ? <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">{error}</p> : null}
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="font-black">Yeni Numune</h3>
+            <Button onClick={onAdd}><Plus className="h-4 w-4" /> Numune Ekle</Button>
+          </div>
+          <Field label="Numune Adı">
+            <input className={input} value={draft.name} onChange={(e) => updateDraft("name", e.target.value)} placeholder="Numune adı" />
+          </Field>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {["smallRoom", "bathroom", "largeRoom", "continuity"].map((field) => (
+              <SampleScoreField key={field} item={draft} field={field} onChange={updateDraft} />
+            ))}
+          </div>
+          <Field label="Notlar">
+            <textarea
+              className={`${input} mt-3 min-h-24`}
+              value={draft.notes}
+              onChange={(e) => updateDraft("notes", e.target.value)}
+              placeholder="Yayılım gözlemleri, kullanıcı hissi..."
+            />
+          </Field>
+          <div className="mt-3 inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-700">
+            Toplam: {sampleTotal(draft)} / 100
+            <span className={`rounded-full border px-2.5 py-1 text-xs ${sampleDecisionTone(sampleTotal(draft))}`}>
+              {sampleDecision(sampleTotal(draft))}
+            </span>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid gap-4">
+        {list.length === 0 ? (
+          <Empty text="Henüz numune kaydı yok." />
+        ) : (
+          list.map((x) => {
+            const item = editMap[x.id] || x;
+            const total = sampleTotal(item);
+            return (
+              <Card key={x.id} className="p-5 md:p-6">
+                <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <Field label="Numune Adı">
+                      <input
+                        className={input}
+                        value={item.name}
+                        onChange={(e) => updateEdit(x.id, "name", e.target.value)}
+                        placeholder="Numune adı"
+                      />
+                    </Field>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-black text-slate-700">{total} / 100</span>
+                    <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${sampleDecisionTone(total)}`}>
+                      {sampleDecision(total)}
+                    </span>
+                  </div>
+                </div>
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {["smallRoom", "bathroom", "largeRoom", "continuity"].map((field) => (
+                    <SampleScoreField key={field} item={item} field={field} onChange={(f, v) => updateEdit(x.id, f, v)} />
+                  ))}
+                </div>
+                <Field label="Notlar">
+                  <textarea
+                    className={`${input} mt-3 min-h-20`}
+                    value={item.notes}
+                    onChange={(e) => updateEdit(x.id, "notes", e.target.value)}
+                  />
+                </Field>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button onClick={() => onSave(item)}>Kaydet</Button>
+                  <Button variant="outline" className="text-rose-600" onClick={() => onDelete(x.id)}>
+                    <Trash2 className="h-4 w-4" /> Sil
+                  </Button>
+                </div>
+              </Card>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SampleAnalysisPage({
+  sampleTests,
+  filtered,
+  summary,
+  search,
+  setSearch,
+  decisionFilter,
+  setDecisionFilter,
+  min,
+  setMin,
+  max,
+  setMax,
+  view,
+  setView,
+  onEditSample,
+}) {
+  const categoryMap = sampleDecisionOptions.map((label) => ({
+    label,
+    items: filtered.filter((x) => sampleDecision(sampleTotal(x)) === label),
+  }));
+  return (
+    <div className="space-y-6">
+      <Card className="p-5 md:p-6">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-black">Numune Analizi</h2>
+          </div>
+          <div className="grid gap-2 md:grid-cols-4">
+            <input className={input} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Numune ara" />
+            <select className={input} value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value)}>
+              <option>Tümü</option>
+              {sampleDecisionOptions.map((x) => <option key={x}>{x}</option>)}
+            </select>
+            <input className={input} type="number" value={min} onChange={(e) => setMin(e.target.value)} placeholder="Min puan" />
+            <input className={input} type="number" value={max} onChange={(e) => setMax(e.target.value)} placeholder="Maks puan" />
+          </div>
+        </div>
+        <div className="mb-5 flex flex-wrap gap-2">
+          {[
+            ["summary", "Genel Özet"],
+            ["ranking", "Sıralama"],
+            ["category", "Kategori Analizi"],
+            ["table", "Detay Tablo"],
+          ].map(([k, t]) => (
+            <Button key={k} variant={view === k ? "solid" : "outline"} onClick={() => setView(k)}>{t}</Button>
+          ))}
+        </div>
+        <div className="grid gap-3 md:grid-cols-4">
+          <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-400">Toplam Numune</p><p className="mt-1 text-2xl font-black">{summary.total}</p></div>
+          <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-400">Ortalama Toplam</p><p className="mt-1 text-2xl font-black">{summary.avg}</p></div>
+          <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-400">Satışa Uygun</p><p className="mt-1 text-2xl font-black">{summary.counts.strong}</p></div>
+          <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold text-slate-400">Eleme Adayı</p><p className="mt-1 text-2xl font-black">{summary.counts.rejected}</p></div>
+        </div>
+      </Card>
+
+      {view === "summary" ? (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card className="p-5 md:p-6">
+            <h3 className="mb-4 text-xl font-black">Genel Özet</h3>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Info label="En Yüksek Numune" value={summary.best?.name || "-"} />
+              <Info label="En Yüksek Puan" value={summary.best ? `${sampleTotal(summary.best)} / 100` : "-"} />
+              <Info label="Ortalama Küçük-Orta Oda" value={summary.avgSmall} />
+              <Info label="Ortalama Banyo" value={summary.avgBath} />
+              <Info label="Ortalama Büyük Oda" value={summary.avgLarge} />
+              <Info label="Ortalama Devamlılık" value={summary.avgContinuity} />
+            </div>
+          </Card>
+          <Card className="p-5 md:p-6">
+            <h3 className="mb-4 text-xl font-black">Karar Dağılımı</h3>
+            <div className="space-y-2">
+              {sampleDecisionOptions.map((x) => {
+                const count = sampleTests.filter((t) => sampleDecision(sampleTotal(t)) === x).length;
+                return (
+                  <div key={x} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                    <span className="text-sm font-semibold text-slate-700">{x}</span>
+                    <b>{count}</b>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {view === "ranking" ? (
+        <Card className="p-5 md:p-6">
+          <h3 className="mb-4 text-xl font-black">Sıralama</h3>
+          <div className="overflow-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[960px] bg-white text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <tr>{["Sıra", "Numune", "K/Oda", "Banyo", "B/Oda", "Devamlılık", "Toplam", "Karar"].map((h) => <th key={h} className="p-3">{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {filtered.map((x, i) => (
+                  <tr key={x.id} className="border-t border-slate-100">
+                    <td className="p-3">{i + 1}</td>
+                    <td className="p-3 font-bold">{x.name || "-"}</td>
+                    <td className="p-3">{n(x.smallRoom)}</td>
+                    <td className="p-3">{n(x.bathroom)}</td>
+                    <td className="p-3">{n(x.largeRoom)}</td>
+                    <td className="p-3">{n(x.continuity)}</td>
+                    <td className="p-3 font-black">{sampleTotal(x)} / 100</td>
+                    <td className="p-3"><span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${sampleDecisionTone(sampleTotal(x))}`}>{sampleDecision(sampleTotal(x))}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : null}
+
+      {view === "category" ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {categoryMap.map((cat) => (
+            <Card key={cat.label} className="p-5 md:p-6">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="font-black">{cat.label}</h3>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{cat.items.length} numune</span>
+              </div>
+              {cat.items.length === 0 ? <p className="text-sm text-slate-500">Kayıt yok.</p> : (
+                <div className="space-y-2">
+                  {cat.items.map((x) => (
+                    <div key={x.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <b>{x.name || "-"}</b>
+                        <span className="text-sm font-black">{sampleTotal(x)} / 100</span>
+                      </div>
+                      {x.notes ? <p className="mt-1 text-xs text-slate-600">{x.notes}</p> : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {view === "table" ? (
+        <Card className="p-5 md:p-6">
+          <h3 className="mb-4 text-xl font-black">Detay Tablo</h3>
+          <div className="overflow-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[1120px] bg-white text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <tr>{["Numune", "Küçük-Orta Oda", "Banyo", "Büyük Oda", "Devamlılık", "Toplam", "Karar", "Notlar", "İşlem"].map((h) => <th key={h} className="p-3">{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {filtered.map((x) => (
+                  <tr key={x.id} className="border-t border-slate-100">
+                    <td className="p-3 font-bold">{x.name || "-"}</td>
+                    <td className="p-3">{n(x.smallRoom)}</td>
+                    <td className="p-3">{n(x.bathroom)}</td>
+                    <td className="p-3">{n(x.largeRoom)}</td>
+                    <td className="p-3">{n(x.continuity)}</td>
+                    <td className="p-3 font-black">{sampleTotal(x)} / 100</td>
+                    <td className="p-3"><span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${sampleDecisionTone(sampleTotal(x))}`}>{sampleDecision(sampleTotal(x))}</span></td>
+                    <td className="p-3">{x.notes || "-"}</td>
+                    <td className="p-3"><Button variant="outline" onClick={() => onEditSample(x)}>Düzenle</Button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : null}
+    </div>
   );
 }
 
