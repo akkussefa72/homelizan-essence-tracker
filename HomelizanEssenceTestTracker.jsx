@@ -405,6 +405,12 @@ export default function HomelizanEssenceTestTracker() {
   const connectionStatus = !loading && !supabaseError;
 
   useEffect(() => {
+    if (!canManageUsers && page === "admin") {
+      setPage("formulaRecord");
+    }
+  }, [canManageUsers, page]);
+
+  useEffect(() => {
     let active = true;
     async function initAuth() {
       if (!isSupabaseReady) {
@@ -1790,7 +1796,7 @@ export default function HomelizanEssenceTestTracker() {
             {roleError}
           </Card>
         )}
-        <Tabs page={page} setPage={setPage} />
+        <Tabs page={page} setPage={setPage} canManageUsers={canManageUsers} />
         {(page === "formulaRecord" || page === "formulaAnalysis") && <Stats stats={stats} />}
         {page === "formulaRecord" || page === "formulaAnalysis" ? (
           <PdfExportModal
@@ -2165,7 +2171,7 @@ function PdfExportModal({
   );
 }
 
-function Tabs({ page, setPage }) {
+function Tabs({ page, setPage, canManageUsers }) {
   return (
     <div className="grid w-full grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm md:flex md:w-fit md:flex-wrap">
       <Button
@@ -2196,13 +2202,15 @@ function Tabs({ page, setPage }) {
       >
         <BarChart3 className="h-4 w-4" /> Numune Analizi
       </Button>
-      <Button
-        className="w-full md:w-auto"
-        variant={page === "admin" ? "solid" : "ghost"}
-        onClick={() => setPage("admin")}
-      >
-        <LayoutDashboard className="h-4 w-4" /> Admin Paneli
-      </Button>
+      {canManageUsers ? (
+        <Button
+          className="w-full md:w-auto"
+          variant={page === "admin" ? "solid" : "ghost"}
+          onClick={() => setPage("admin")}
+        >
+          <LayoutDashboard className="h-4 w-4" /> Admin Paneli
+        </Button>
+      ) : null}
     </div>
   );
 }
