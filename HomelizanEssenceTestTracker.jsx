@@ -2,10 +2,12 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
   Copy,
+  Database,
   Download,
   Eye,
   FileDown,
   FlaskConical,
+  LayoutDashboard,
   LogOut,
   Plus,
   Search,
@@ -53,6 +55,7 @@ const pdfDefaults = {
 };
 const SUPABASE_FALLBACK_TEXT = "Supabase bağlantı hatası. Yerel yedek kullanılabilir.";
 const SAMPLE_KEY = "homelizan_sample_tests_v1";
+const SAMPLE_SECTION_KEY = "homelizan_sample_sections_v1";
 const sampleBlank = {
   id: null,
   name: "",
@@ -62,6 +65,11 @@ const sampleBlank = {
   continuity: 0,
   notes: "",
 };
+const sampleSectionBlank = {
+  id: null,
+  name: "",
+};
+const roleOptions = ["admin", "editor", "viewer"];
 const sampleBands = {
   smallRoom: {
     title: "Küçük-Orta Oda Yayılımı",
@@ -277,12 +285,22 @@ function normalizeSample(row = {}) {
     ...sampleBlank,
     ...row,
     id: row.id || uid(),
+    section_id: row.section_id || null,
     name: clean(row.name),
     smallRoom: n(row.smallRoom),
     bathroom: n(row.bathroom),
     largeRoom: n(row.largeRoom),
     continuity: n(row.continuity),
     notes: String(row.notes || "").trim(),
+  };
+}
+
+function normalizeSampleSection(row = {}) {
+  return {
+    ...sampleSectionBlank,
+    ...row,
+    id: row.id || uid(),
+    name: clean(row.name) || "Yeni Bölüm",
   };
 }
 
@@ -304,6 +322,11 @@ function sampleDecisionTone(total) {
   if (total >= 65) return "bg-violet-100 text-violet-700 border-violet-200";
   if (total >= 55) return "bg-amber-100 text-amber-700 border-amber-200";
   return "bg-rose-100 text-rose-700 border-rose-200";
+}
+
+function normalizeRole(role) {
+  const value = String(role || "").toLowerCase();
+  return roleOptions.includes(value) ? value : "viewer";
 }
 
 function Card({ children, className = "" }) {
@@ -370,6 +393,15 @@ export default function HomelizanEssenceTestTracker() {
   const [sampleMin, setSampleMin] = useState("");
   const [sampleMax, setSampleMax] = useState("");
   const [sampleAnalysisView, setSampleAnalysisView] = useState("summary");
+  const [sampleSections, setSampleSections] = useState([]);
+  const [selectedSampleSectionId, setSelectedSampleSectionId] = useState(null);
+  const [sampleSectionName, setSampleSectionName] = useState("");
+  const [currentRole, setCurrentRole] = useState("viewer");
+  const [roleLoading, setRoleLoading] = useState(true);
+  const [roleError, setRoleError] = useState("");
+  const [userRoles, setUserRoles] = useState([]);
+  const canManageUsers = currentRole === "admin";
+  const canWrite = currentRole === "admin" || currentRole === "editor";
   const connectionStatus = !loading && !supabaseError;
 
   useEffect(() => {
@@ -398,6 +430,92 @@ export default function HomelizanEssenceTestTracker() {
       sub?.subscription?.unsubscribe?.();
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    async function loadCurrentRole() {
+      if (!authReady) return;
+      if (!user) {
+        if (!active) return;
+        setCurrentRole("viewer");
+        setRoleLoading(false);
+        setRoleError("");
+        return;
+      }
+      if (!isSupabaseReady) {
+        if (!active) return;
+        setCurrentRole("viewer");
+        setRoleLoading(false);
+        setRoleError(`${SUPABASE_FALLBACK_TEXT} (user_roles)`);
+        return;
+      }
+      setRoleLoading(true);
+      setRoleError("");
+      try {
+        const { data, error } = await supabase
+          .from("user_roles")
+          .select("user_id, email, role")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) {
+          const row = {
+            user_id: user.id,
+            email: user.email || "",
+            role: "viewer",
+            updated_at: new Date().toISOString(),
+          };
+          const { error: insertError } = await supabase.from("user_roles").insert([row]);
+          if (insertError && !String(insertError.message || "").toLowerCase().includes("duplicate")) {
+            throw insertError;
+          }
+          if (!active) return;
+          setCurrentRole("viewer");
+        } else {
+          if (!active) return;
+          setCurrentRole(normalizeRole(data.role));
+        }
+      } catch (e) {
+        console.error("user_roles okunamadı", e);
+        if (!active) return;
+        setCurrentRole("viewer");
+        setRoleError(supabaseErrorText(e));
+      } finally {
+        if (active) setRoleLoading(false);
+      }
+    }
+    loadCurrentRole();
+    return () => {
+      active = false;
+    };
+  }, [authReady, user]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadUserRoles() {
+      if (!authReady || !user || !isSupabaseReady || !canManageUsers) {
+        if (active) setUserRoles([]);
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from("user_roles")
+          .select("user_id, email, role, created_at, updated_at")
+          .order("created_at", { ascending: false });
+        if (error) throw error;
+        if (!active) return;
+        setUserRoles(Array.isArray(data) ? data.map((x) => ({ ...x, role: normalizeRole(x.role) })) : []);
+      } catch (e) {
+        console.error("Kullanıcı rolleri alınamadı", e);
+        if (!active) return;
+        setRoleError(supabaseErrorText(e));
+      }
+    }
+    loadUserRoles();
+    return () => {
+      active = false;
+    };
+  }, [authReady, user, canManageUsers]);
 
   useEffect(() => {
     let active = true;
@@ -443,12 +561,64 @@ export default function HomelizanEssenceTestTracker() {
 
   useEffect(() => {
     let active = true;
-    async function loadSampleTests() {
+    async function loadSampleSections() {
       if (!authReady) return;
       if (!isSupabaseReady) {
         if (!active) return;
+        const localSections = safeParse(localStorage.getItem(SAMPLE_SECTION_KEY) || "[]");
+        const normalizedSections = Array.isArray(localSections)
+          ? localSections.map(normalizeSampleSection)
+          : [];
+        setSampleSections(normalizedSections);
+        setSelectedSampleSectionId((prev) => prev || normalizedSections[0]?.id || null);
+        setSampleError(`${SUPABASE_FALLBACK_TEXT} (sample_sections)`);
+        return;
+      }
+      if (!user) {
+        if (!active) return;
+        setSampleSections([]);
+        setSelectedSampleSectionId(null);
+        return;
+      }
+      try {
+        const { data, error } = await supabase.from("sample_sections").select("*").order("created_at", { ascending: true });
+        if (error) throw error;
+        if (!active) return;
+        const sections = Array.isArray(data) ? data.map(normalizeSampleSection) : [];
+        setSampleSections(sections);
+        setSelectedSampleSectionId((prev) => prev || sections[0]?.id || null);
+      } catch (e) {
+        console.error("sample_sections okunamadı", e);
+        if (!active) return;
+        const localSections = safeParse(localStorage.getItem(SAMPLE_SECTION_KEY) || "[]");
+        const normalizedSections = Array.isArray(localSections)
+          ? localSections.map(normalizeSampleSection)
+          : [];
+        setSampleSections(normalizedSections);
+        setSelectedSampleSectionId((prev) => prev || normalizedSections[0]?.id || null);
+        setSampleError(supabaseErrorText(e));
+      }
+    }
+    loadSampleSections();
+    return () => {
+      active = false;
+    };
+  }, [authReady, user]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadSampleTests() {
+      if (!authReady) return;
+      if (!selectedSampleSectionId) {
+        setSampleTests([]);
+        setSampleLoading(false);
+        return;
+      }
+      if (!isSupabaseReady) {
+        if (!active) return;
         const local = safeParse(localStorage.getItem(SAMPLE_KEY) || "[]");
-        setSampleTests(Array.isArray(local) ? local.map(normalizeSample) : []);
+        const tests = Array.isArray(local) ? local.map(normalizeSample) : [];
+        setSampleTests(tests.filter((x) => x.section_id === selectedSampleSectionId));
         setSampleError(`${SUPABASE_FALLBACK_TEXT} (sample_tests)`);
         setSampleLoading(false);
         return;
@@ -466,15 +636,21 @@ export default function HomelizanEssenceTestTracker() {
         const { data, error } = await supabase
           .from("sample_tests")
           .select("*")
+          .eq("section_id", selectedSampleSectionId)
           .order("updated_at", { ascending: false });
         if (error) throw error;
         if (!active) return;
-        setSampleTests(Array.isArray(data) ? data.map(normalizeSample) : []);
+        setSampleTests(
+          Array.isArray(data)
+            ? data.map(normalizeSample).filter((x) => x.section_id === selectedSampleSectionId)
+            : [],
+        );
       } catch (e) {
         console.error("sample_tests okunamadı", e);
         if (!active) return;
         const local = safeParse(localStorage.getItem(SAMPLE_KEY) || "[]");
-        setSampleTests(Array.isArray(local) ? local.map(normalizeSample) : []);
+        const tests = Array.isArray(local) ? local.map(normalizeSample) : [];
+        setSampleTests(tests.filter((x) => x.section_id === selectedSampleSectionId));
         setSampleError(supabaseErrorText(e));
       } finally {
         if (active) setSampleLoading(false);
@@ -484,7 +660,7 @@ export default function HomelizanEssenceTestTracker() {
     return () => {
       active = false;
     };
-  }, [authReady, user]);
+  }, [authReady, user, selectedSampleSectionId]);
 
   useEffect(() => {
     try {
@@ -496,11 +672,42 @@ export default function HomelizanEssenceTestTracker() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(SAMPLE_KEY, JSON.stringify(sampleTests));
+      const existing = safeParse(localStorage.getItem(SAMPLE_KEY) || "[]");
+      const all = Array.isArray(existing) ? existing.map(normalizeSample) : [];
+      if (!selectedSampleSectionId) {
+        return;
+      }
+      const scoped = sampleTests.map(normalizeSample).filter((x) => x.section_id === selectedSampleSectionId);
+      if (scoped.length !== sampleTests.length) {
+        return;
+      }
+      const merged = [
+        ...all.filter((x) => x.section_id !== selectedSampleSectionId),
+        ...scoped,
+      ];
+      localStorage.setItem(SAMPLE_KEY, JSON.stringify(merged));
     } catch (e) {
       console.error("Numune yedeği yazılamadı", e);
     }
-  }, [sampleTests]);
+  }, [sampleTests, selectedSampleSectionId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAMPLE_SECTION_KEY, JSON.stringify(sampleSections));
+    } catch (e) {
+      console.error("Numune bölüm yedeği yazılamadı", e);
+    }
+  }, [sampleSections]);
+
+  useEffect(() => {
+    if (!selectedSampleSectionId && sampleSections.length > 0) {
+      setSelectedSampleSectionId(sampleSections[0].id);
+      return;
+    }
+    if (selectedSampleSectionId && !sampleSections.some((x) => x.id === selectedSampleSectionId)) {
+      setSelectedSampleSectionId(sampleSections[0]?.id || null);
+    }
+  }, [sampleSections, selectedSampleSectionId]);
 
   const update = (field, value) => setForm((p) => ({ ...p, [field]: value }));
   const totalPct = pctTotal(form);
@@ -640,6 +847,31 @@ export default function HomelizanEssenceTestTracker() {
     };
   }, [sampleTests]);
 
+  const formulaStatusSummary = useMemo(
+    () =>
+      statuses.map((label) => ({
+        label,
+        value: tests.filter((t) => t.status === label).length,
+      })),
+    [tests],
+  );
+
+  const sampleDecisionSummary = useMemo(
+    () =>
+      sampleDecisionOptions.map((label) => ({
+        label,
+        value: sampleTests.filter((x) => sampleDecision(sampleTotal(x)) === label).length,
+      })),
+    [sampleTests],
+  );
+
+  const topEssenceSummary = useMemo(() => summaryBy(tests, "essence").slice(0, 6), [tests]);
+  const topAlcoholSummary = useMemo(() => summaryBy(tests, "alcohol").slice(0, 6), [tests]);
+  const selectedSampleSectionName = useMemo(
+    () => sampleSections.find((x) => x.id === selectedSampleSectionId)?.name || "Bölüm seçili değil",
+    [sampleSections, selectedSampleSectionId],
+  );
+
   function setPdfField(field, value) {
     setPdfOptions((prev) => ({ ...prev, [field]: value }));
   }
@@ -682,7 +914,37 @@ export default function HomelizanEssenceTestTracker() {
     return [...map.values()].sort((a, b) => b.total - a.total);
   }
 
+  function denyWrite() {
+    alert("İzleyici modunda düzenleme işlemi yapılamaz.");
+  }
+
+  async function updateUserRole(userId, nextRole) {
+    if (!canManageUsers) {
+      denyWrite();
+      return;
+    }
+    const role = normalizeRole(nextRole);
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase
+        .from("user_roles")
+        .update({ role, updated_at: new Date().toISOString() })
+        .eq("user_id", userId);
+      if (error) throw error;
+      setRoleError("");
+      setUserRoles((old) => old.map((x) => (x.user_id === userId ? { ...x, role } : x)));
+      if (userId === user?.id) setCurrentRole(role);
+    } catch (e) {
+      console.error("Rol güncelleme hatası", e);
+      setRoleError(supabaseErrorText(e));
+    }
+  }
+
   async function save() {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
     const item = normalize({
       ...form,
       essenceMl: calc.essenceMl,
@@ -721,6 +983,10 @@ export default function HomelizanEssenceTestTracker() {
   }
 
   async function duplicate(t) {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
     const copy = normalize({
       ...t,
       id: uid(),
@@ -743,6 +1009,10 @@ export default function HomelizanEssenceTestTracker() {
   }
 
   async function remove(testId) {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
     try {
       if (!isSupabaseReady) throw new Error("supabase_not_ready");
       const { error } = await supabase.from("tests").delete().eq("id", testId);
@@ -757,10 +1027,92 @@ export default function HomelizanEssenceTestTracker() {
     if (selectedId === testId) setSelectedId(null);
   }
 
+  async function createSampleSection() {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
+    const name = clean(sampleSectionName);
+    if (!name) return;
+    const section = normalizeSampleSection({ id: uid(), name });
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase.from("sample_sections").insert([{ id: section.id, name: section.name }]);
+      if (error) throw error;
+      setSampleError("");
+    } catch (e) {
+      console.error("sample_sections oluşturma hatası", e);
+      setSampleError(supabaseErrorText(e));
+    }
+    setSampleSections((old) => [...old, section]);
+    setSelectedSampleSectionId(section.id);
+    setSampleSectionName("");
+  }
+
+  async function renameSampleSection(id, name) {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
+    const nextName = clean(name);
+    if (!nextName) return;
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error } = await supabase.from("sample_sections").update({ name: nextName }).eq("id", id);
+      if (error) throw error;
+      setSampleError("");
+    } catch (e) {
+      console.error("sample_sections güncelleme hatası", e);
+      setSampleError(supabaseErrorText(e));
+    }
+    setSampleSections((old) => old.map((x) => (x.id === id ? { ...x, name: nextName } : x)));
+  }
+
+  async function deleteSampleSection(id) {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
+    if (!id) return;
+    const remain = sampleSections.filter((x) => x.id !== id);
+    try {
+      if (!isSupabaseReady) throw new Error("supabase_not_ready");
+      const { error: testDeleteError } = await supabase.from("sample_tests").delete().eq("section_id", id);
+      if (testDeleteError) throw testDeleteError;
+      const { error } = await supabase.from("sample_sections").delete().eq("id", id);
+      if (error) throw error;
+      setSampleError("");
+    } catch (e) {
+      console.error("sample_sections silme hatası", e);
+      setSampleError(supabaseErrorText(e));
+    }
+    setSampleSections(remain);
+    setSelectedSampleSectionId(remain[0]?.id || null);
+    if (selectedSampleSectionId === id) setSampleTests([]);
+    try {
+      const existing = safeParse(localStorage.getItem(SAMPLE_KEY) || "[]");
+      const next = Array.isArray(existing)
+        ? existing.map(normalizeSample).filter((x) => x.section_id !== id)
+        : [];
+      localStorage.setItem(SAMPLE_KEY, JSON.stringify(next));
+    } catch (e) {
+      console.error("Yerel numune bölüm temizleme hatası", e);
+    }
+  }
+
   async function saveSample(item) {
+    if (!canWrite) {
+      denyWrite();
+      return null;
+    }
+    if (!selectedSampleSectionId) {
+      setSampleError("Önce bir numune bölümü oluştur veya seç.");
+      return null;
+    }
     const next = normalizeSample(item);
     const payload = {
       id: next.id || uid(),
+      section_id: selectedSampleSectionId,
       name: next.name || "İsimsiz Numune",
       smallRoom: n(next.smallRoom),
       bathroom: n(next.bathroom),
@@ -791,6 +1143,10 @@ export default function HomelizanEssenceTestTracker() {
   }
 
   async function deleteSample(id) {
+    if (!canWrite) {
+      denyWrite();
+      return;
+    }
     try {
       if (!isSupabaseReady) throw new Error("supabase_not_ready");
       const { error } = await supabase.from("sample_tests").delete().eq("id", id);
@@ -814,6 +1170,11 @@ export default function HomelizanEssenceTestTracker() {
   }
 
   function importSampleJson(e) {
+    if (!canWrite) {
+      denyWrite();
+      e.target.value = "";
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -821,11 +1182,15 @@ export default function HomelizanEssenceTestTracker() {
       try {
         const data = safeParse(String(reader.result));
         if (!Array.isArray(data)) throw new Error("bad_json");
-        const next = data.map((x) => normalizeSample({ ...x, id: x.id || uid() }));
+        if (!selectedSampleSectionId) throw new Error("no_section");
+        const next = data.map((x) =>
+          normalizeSample({ ...x, id: x.id || uid(), section_id: selectedSampleSectionId }),
+        );
         try {
           if (!isSupabaseReady) throw new Error("supabase_not_ready");
           const rows = next.map((x) => ({
             id: x.id,
+            section_id: selectedSampleSectionId,
             name: x.name,
             smallRoom: n(x.smallRoom),
             bathroom: n(x.bathroom),
@@ -1293,6 +1658,11 @@ export default function HomelizanEssenceTestTracker() {
   }
 
   function importJson(e) {
+    if (!canWrite) {
+      denyWrite();
+      e.target.value = "";
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -1410,6 +1780,16 @@ export default function HomelizanEssenceTestTracker() {
             {supabaseError}
           </Card>
         )}
+        {roleLoading && (
+          <Card className="rounded-2xl px-4 py-3 text-sm font-semibold text-slate-600">
+            Kullanıcı yetkisi kontrol ediliyor...
+          </Card>
+        )}
+        {roleError && (
+          <Card className="rounded-2xl border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+            {roleError}
+          </Card>
+        )}
         <Tabs page={page} setPage={setPage} />
         {(page === "formulaRecord" || page === "formulaAnalysis") && <Stats stats={stats} />}
         {page === "formulaRecord" || page === "formulaAnalysis" ? (
@@ -1451,6 +1831,7 @@ export default function HomelizanEssenceTestTracker() {
               edit,
               duplicate,
               remove,
+              canEdit: canWrite,
             }}
           />
         ) : null}
@@ -1475,16 +1856,25 @@ export default function HomelizanEssenceTestTracker() {
               edit,
               setSelectedId,
               setPage,
+              canEdit: canWrite,
             }}
           />
         ) : null}
         {page === "sampleRecord" ? (
           <SampleTestPage
+            sections={sampleSections}
+            selectedSectionId={selectedSampleSectionId}
+            onSelectSection={setSelectedSampleSectionId}
+            sectionName={sampleSectionName}
+            setSectionName={setSampleSectionName}
+            onCreateSection={createSampleSection}
+            onRenameSection={renameSampleSection}
+            onDeleteSection={deleteSampleSection}
             draft={sampleDraft}
             setDraft={setSampleDraft}
             onAdd={async () => {
-              await saveSample({ ...sampleDraft, id: uid() });
-              setSampleDraft(sampleBlank);
+              const saved = await saveSample({ ...sampleDraft, id: uid(), section_id: selectedSampleSectionId });
+              if (saved) setSampleDraft(sampleBlank);
             }}
             list={sampleTests}
             loading={sampleLoading}
@@ -1493,10 +1883,14 @@ export default function HomelizanEssenceTestTracker() {
             onDelete={deleteSample}
             onExportJson={exportSampleJson}
             onImportJson={importSampleJson}
+            canEdit={canWrite}
           />
         ) : null}
         {page === "sampleAnalysis" ? (
           <SampleAnalysisPage
+            sections={sampleSections}
+            selectedSectionId={selectedSampleSectionId}
+            onSelectSection={setSelectedSampleSectionId}
             sampleTests={sampleTests}
             filtered={sampleFiltered}
             summary={sampleSummary}
@@ -1507,14 +1901,33 @@ export default function HomelizanEssenceTestTracker() {
             min={sampleMin}
             setMin={setSampleMin}
             max={sampleMax}
-            setMax={setSampleMax}
-            view={sampleAnalysisView}
-            setView={setSampleAnalysisView}
-            onEditSample={(x) => {
-              setSampleDraft(x);
-              setPage("sampleRecord");
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
+              setMax={setSampleMax}
+              view={sampleAnalysisView}
+              setView={setSampleAnalysisView}
+              canEdit={canWrite}
+              onEditSample={(x) => {
+                setSampleDraft(x);
+                setPage("sampleRecord");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+          />
+        ) : null}
+        {page === "admin" ? (
+          <AdminPage
+            connectionStatus={connectionStatus}
+            tests={tests}
+            sampleTests={sampleTests}
+            sampleSections={sampleSections}
+            selectedSampleSectionName={selectedSampleSectionName}
+            formulaStatusSummary={formulaStatusSummary}
+            sampleDecisionSummary={sampleDecisionSummary}
+            topEssenceSummary={topEssenceSummary}
+            topAlcoholSummary={topAlcoholSummary}
+            currentRole={currentRole}
+            userRoles={userRoles}
+            canManageUsers={canManageUsers}
+            onUpdateUserRole={updateUserRole}
+            setPage={setPage}
           />
         ) : null}
       </div>
@@ -1783,6 +2196,186 @@ function Tabs({ page, setPage }) {
       >
         <BarChart3 className="h-4 w-4" /> Numune Analizi
       </Button>
+      <Button
+        className="w-full md:w-auto"
+        variant={page === "admin" ? "solid" : "ghost"}
+        onClick={() => setPage("admin")}
+      >
+        <LayoutDashboard className="h-4 w-4" /> Admin Paneli
+      </Button>
+    </div>
+  );
+}
+
+function AdminPage({
+  connectionStatus,
+  tests,
+  sampleTests,
+  sampleSections,
+  selectedSampleSectionName,
+  formulaStatusSummary,
+  sampleDecisionSummary,
+  topEssenceSummary,
+  topAlcoholSummary,
+  currentRole,
+  userRoles,
+  canManageUsers,
+  onUpdateUserRole,
+  setPage,
+}) {
+  return (
+    <div className="space-y-6">
+      <Card className="p-5 md:p-6">
+        <div className="mb-4 flex items-center gap-2">
+          <Database className="h-5 w-5" />
+          <h2 className="text-2xl font-black">Admin Paneli</h2>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-6">
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-bold text-slate-400">Bağlantı</p>
+            <p className={`mt-1 text-lg font-black ${connectionStatus ? "text-emerald-700" : "text-rose-700"}`}>
+              {connectionStatus ? "Bağlı" : "Hata"}
+            </p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-bold text-slate-400">Formül Kaydı</p>
+            <p className="mt-1 text-2xl font-black">{tests.length}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-bold text-slate-400">Numune Bölümü</p>
+            <p className="mt-1 text-2xl font-black">{sampleSections.length}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-bold text-slate-400">Seçili Bölüm</p>
+            <p className="mt-1 line-clamp-2 text-sm font-black text-slate-700">{selectedSampleSectionName}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-bold text-slate-400">Seçili Bölüm Numune</p>
+            <p className="mt-1 text-2xl font-black">{sampleTests.length}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <p className="text-xs font-bold text-slate-400">Benim Yetkim</p>
+            <p className="mt-1 text-lg font-black uppercase">{currentRole}</p>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setPage("formulaRecord")}>
+            Formül Kayıtları
+          </Button>
+          <Button variant="outline" onClick={() => setPage("formulaAnalysis")}>
+            Formül Analizi
+          </Button>
+          <Button variant="outline" onClick={() => setPage("sampleRecord")}>
+            Numune Yayılım Testi
+          </Button>
+          <Button variant="outline" onClick={() => setPage("sampleAnalysis")}>
+            Numune Analizi
+          </Button>
+        </div>
+      </Card>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="p-5 md:p-6">
+          <h3 className="mb-4 text-xl font-black">Formül Durum Dağılımı</h3>
+          <div className="space-y-2">
+            {formulaStatusSummary.map((row) => (
+              <div key={row.label} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <span className="text-sm font-semibold text-slate-700">{row.label}</span>
+                <b>{row.value}</b>
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Card className="p-5 md:p-6">
+          <h3 className="mb-4 text-xl font-black">Numune Karar Dağılımı</h3>
+          <div className="space-y-2">
+            {sampleDecisionSummary.map((row) => (
+              <div key={row.label} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <span className="text-sm font-semibold text-slate-700">{row.label}</span>
+                <b>{row.value}</b>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="p-5 md:p-6">
+          <h3 className="mb-4 text-xl font-black">En Çok Kullanılan Esanslar</h3>
+          <div className="space-y-2">
+            {topEssenceSummary.length === 0 ? (
+              <Empty text="Kayıt yok." />
+            ) : (
+              topEssenceSummary.map((row) => (
+                <div key={row.name} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <span className="text-sm font-semibold text-slate-700">{row.name}</span>
+                  <b>{row.total}</b>
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+        <Card className="p-5 md:p-6">
+          <h3 className="mb-4 text-xl font-black">En Çok Kullanılan Etil Alkol</h3>
+          <div className="space-y-2">
+            {topAlcoholSummary.length === 0 ? (
+              <Empty text="Kayıt yok." />
+            ) : (
+              topAlcoholSummary.map((row) => (
+                <div key={row.name} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <span className="text-sm font-semibold text-slate-700">{row.name}</span>
+                  <b>{row.total}</b>
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <Card className="p-5 md:p-6">
+        <h3 className="mb-4 text-xl font-black">Kullanıcı Yetkileri</h3>
+        {!canManageUsers ? (
+          <p className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+            Bu alanı yalnızca admin kullanıcı yönetebilir.
+          </p>
+        ) : userRoles.length === 0 ? (
+          <Empty text="Kullanıcı rol kaydı bulunamadı." />
+        ) : (
+          <div className="overflow-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[760px] bg-white text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <tr>
+                  {["E-posta", "Kullanıcı ID", "Yetki", "İşlem"].map((h) => (
+                    <th key={h} className="p-3">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {userRoles.map((row) => (
+                  <tr key={row.user_id} className="border-t border-slate-100">
+                    <td className="p-3 font-semibold">{row.email || "-"}</td>
+                    <td className="p-3 text-xs text-slate-500">{row.user_id}</td>
+                    <td className="p-3">
+                      <select
+                        className={input}
+                        value={row.role}
+                        onChange={(e) => onUpdateUserRole(row.user_id, e.target.value)}
+                      >
+                        <option value="admin">admin</option>
+                        <option value="editor">editor</option>
+                        <option value="viewer">viewer</option>
+                      </select>
+                    </td>
+                    <td className="p-3 text-xs font-semibold text-slate-500">Anında kaydedilir</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -1840,6 +2433,7 @@ function RecordPage(p) {
     edit,
     duplicate,
     remove,
+    canEdit,
   } = p;
 
   return (
@@ -1849,10 +2443,15 @@ function RecordPage(p) {
           <div>
             <h2 className="text-xl font-black">Yeni Test Kaydı</h2>
           </div>
-          <Button variant="outline" onClick={() => setForm(blank)}>
+          <Button variant="outline" onClick={() => setForm(blank)} disabled={!canEdit}>
             Sıfırla
           </Button>
         </div>
+        {!canEdit ? (
+          <p className="mb-4 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+            İzleyici modunda düzenleme işlemleri kapalıdır.
+          </p>
+        ) : null}
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Test Adı">
             <input
@@ -1860,6 +2459,7 @@ function RecordPage(p) {
               value={form.testName}
               onChange={(e) => update("testName", e.target.value)}
               placeholder="Black Orchid - Alkol A - DPM %5"
+              disabled={!canEdit}
             />
           </Field>
           <Field label="Tarih">
@@ -1868,6 +2468,7 @@ function RecordPage(p) {
               className={input}
               value={form.date}
               onChange={(e) => update("date", e.target.value)}
+              disabled={!canEdit}
             />
           </Field>
           <Field label="Esans Adı">
@@ -1877,6 +2478,7 @@ function RecordPage(p) {
               value={form.essence}
               onChange={(e) => update("essence", e.target.value)}
               placeholder="Black Orchid"
+              disabled={!canEdit}
             />
             <datalist id="essences">
               {essences.map((x) => (
@@ -1891,6 +2493,7 @@ function RecordPage(p) {
               value={form.alcohol}
               onChange={(e) => update("alcohol", e.target.value)}
               placeholder="Etil Alkol A"
+              disabled={!canEdit}
             />
             <datalist id="alcohols">
               {alcohols.map((x) => (
@@ -1903,6 +2506,7 @@ function RecordPage(p) {
               className={input}
               value={form.formula}
               onChange={(e) => update("formula", e.target.value)}
+              disabled={!canEdit}
             >
               {formulas.map((x) => (
                 <option key={x}>{x}</option>
@@ -1914,6 +2518,7 @@ function RecordPage(p) {
               className={input}
               value={form.status}
               onChange={(e) => update("status", e.target.value)}
+              disabled={!canEdit}
             >
               {statuses.map((x) => (
                 <option key={x}>{x}</option>
@@ -1939,6 +2544,7 @@ function RecordPage(p) {
                 type="number"
                 value={form.totalMl}
                 onChange={(e) => update("totalMl", e.target.value)}
+                disabled={!canEdit}
               />
             </Field>
             {[
@@ -1955,6 +2561,7 @@ function RecordPage(p) {
                   step="0.1"
                   value={form[key]}
                   onChange={(e) => update(key, e.target.value)}
+                  disabled={!canEdit}
                 />
                 <p className="mt-1 text-xs text-slate-500">{value} ml</p>
               </Field>
@@ -1978,9 +2585,10 @@ function RecordPage(p) {
             value={form.notes}
             onChange={(e) => update("notes", e.target.value)}
             placeholder="Yayılım, dipte yağ, alkol farkı, DPM/DPG/Augeo etkisi..."
+            disabled={!canEdit}
           />
         </Field>
-        <Button className="mt-5 w-full py-3" onClick={save}>
+        <Button className="mt-5 w-full py-3" onClick={save} disabled={!canEdit}>
           <Plus className="h-4 w-4" /> {form.id ? "Testi Güncelle" : "Testi Kaydet"}
         </Button>
       </Card>
@@ -1998,6 +2606,7 @@ function RecordPage(p) {
             edit,
             duplicate,
             remove,
+            canEdit,
           }}
         />
         <Selected test={selected} />
@@ -2018,6 +2627,7 @@ function TestList({
   edit,
   duplicate,
   remove,
+  canEdit,
 }) {
   return (
     <Card className="p-5 md:p-6">
@@ -2074,13 +2684,13 @@ function TestList({
               </div>
               <p className="mt-2 text-xs text-slate-500">{formulaText(t)}</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button variant="outline" onClick={() => edit(t)}>
+                <Button variant="outline" onClick={() => edit(t)} disabled={!canEdit}>
                   Düzenle
                 </Button>
-                <Button variant="outline" onClick={() => duplicate(t)}>
+                <Button variant="outline" onClick={() => duplicate(t)} disabled={!canEdit}>
                   <Copy className="h-4 w-4" /> Kopyala
                 </Button>
-                <Button variant="outline" className="text-rose-600" onClick={() => remove(t.id)}>
+                <Button variant="outline" className="text-rose-600" onClick={() => remove(t.id)} disabled={!canEdit}>
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
@@ -2146,6 +2756,7 @@ function AnalysisPage(p) {
     edit,
     setSelectedId,
     setPage,
+    canEdit,
   } = p;
 
   const openInRecord = (id) => {
@@ -2212,7 +2823,7 @@ function AnalysisPage(p) {
       {aView === "cards" && <CardsView groups={groups} openInRecord={openInRecord} />}
       {aView === "matrix" && <MatrixView groups={groups} openInRecord={openInRecord} />}
       {aView === "summary" && <SummaryView formulaSummary={formulaSummary} alcoholSummary={alcoholSummary} />}
-      {aView === "table" && <DetailTable tests={analysisTests} edit={edit} />}
+      {aView === "table" && <DetailTable tests={analysisTests} edit={edit} canEdit={canEdit} />}
     </div>
   );
 }
@@ -2347,7 +2958,7 @@ function SummaryCard({ title, rows }) {
   );
 }
 
-function DetailTable({ tests, edit }) {
+function DetailTable({ tests, edit, canEdit }) {
   return (
     <Card className="p-5 md:p-6">
       <h2 className="mb-4 text-xl font-black">Detay Tablo</h2>
@@ -2388,7 +2999,7 @@ function DetailTable({ tests, edit }) {
                   <Badge status={t.status}>{t.status}</Badge>
                 </td>
                 <td className="p-3">
-                  <Button variant="outline" onClick={() => edit(t)}>
+                  <Button variant="outline" onClick={() => edit(t)} disabled={!canEdit}>
                     Düzenle
                   </Button>
                 </td>
@@ -2409,7 +3020,7 @@ const sampleDecisionOptions = [
   "Eleme adayı",
 ];
 
-function SampleScoreField({ item, field, onChange }) {
+function SampleScoreField({ item, field, onChange, disabled = false }) {
   const conf = sampleBands[field];
   const value = n(item[field]);
   return (
@@ -2425,6 +3036,7 @@ function SampleScoreField({ item, field, onChange }) {
         max={conf.max}
         value={value}
         onChange={(e) => onChange(field, Math.max(0, Math.min(conf.max, n(e.target.value))))}
+        disabled={disabled}
       />
       <div className="mt-2 space-y-1.5">
         {conf.lines.map((line) => (
@@ -2432,6 +3044,7 @@ function SampleScoreField({ item, field, onChange }) {
             type="button"
             key={`${field}-${line.text}`}
             onClick={() => onChange(field, line.recommended)}
+            disabled={disabled}
             className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs hover:bg-white"
           >
             <span className="text-slate-600">{line.text}</span>
@@ -2444,6 +3057,14 @@ function SampleScoreField({ item, field, onChange }) {
 }
 
 function SampleTestPage({
+  sections,
+  selectedSectionId,
+  onSelectSection,
+  sectionName,
+  setSectionName,
+  onCreateSection,
+  onRenameSection,
+  onDeleteSection,
   draft,
   setDraft,
   onAdd,
@@ -2454,6 +3075,7 @@ function SampleTestPage({
   onDelete,
   onExportJson,
   onImportJson,
+  canEdit,
 }) {
   const [editMap, setEditMap] = useState({});
   useEffect(() => {
@@ -2482,23 +3104,72 @@ function SampleTestPage({
             <Button variant="outline" onClick={onExportJson}><Download className="h-4 w-4" /> Numune JSON Dışa Aktar</Button>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
               <Upload className="h-4 w-4" /> Numune JSON İçe Aktar
-              <input type="file" accept="application/json" className="hidden" onChange={onImportJson} />
+              <input type="file" accept="application/json" className="hidden" onChange={onImportJson} disabled={!canEdit} />
             </label>
           </div>
         </div>
+        {!canEdit ? (
+          <p className="mb-3 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+            İzleyici modunda numune düzenleme kapalıdır.
+          </p>
+        ) : null}
+        <div className="mb-4 grid gap-2 md:grid-cols-[1fr_1fr_auto_auto]">
+          <select className={input} value={selectedSectionId || ""} onChange={(e) => onSelectSection(e.target.value || null)}>
+            <option value="">Bölüm seç</option>
+            {sections.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <input
+            className={input}
+            value={sectionName}
+            onChange={(e) => setSectionName(e.target.value)}
+            placeholder="Yeni bölüm adı"
+            disabled={!canEdit}
+          />
+          <Button onClick={onCreateSection} disabled={!canEdit}><Plus className="h-4 w-4" /> Bölüm Oluştur</Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              const current = sections.find((s) => s.id === selectedSectionId);
+              const next = window.prompt("Bölüm adını güncelle", current?.name || "");
+              if (next) onRenameSection(selectedSectionId, next);
+            }}
+            disabled={!selectedSectionId || !canEdit}
+          >
+            Düzenle
+          </Button>
+        </div>
+        <div className="mb-4">
+          <Button
+            variant="outline"
+            className="text-rose-600"
+            disabled={!selectedSectionId || !canEdit}
+            onClick={() => {
+              if (window.confirm("Bu bölüm ve içindeki tüm numuneler silinsin mi?")) onDeleteSection(selectedSectionId);
+            }}
+          >
+            <Trash2 className="h-4 w-4" /> Bölümü Sil
+          </Button>
+        </div>
         {loading ? <p className="text-sm text-slate-500">Numune kayıtları yükleniyor...</p> : null}
         {error ? <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">{error}</p> : null}
+        {sections.length === 0 ? (
+          <p className="mb-3 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+            Numune eklemek için önce bir bölüm oluştur.
+          </p>
+        ) : null}
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="font-black">Yeni Numune</h3>
-            <Button onClick={onAdd}><Plus className="h-4 w-4" /> Numune Ekle</Button>
+            <Button onClick={onAdd} disabled={!selectedSectionId || !canEdit}><Plus className="h-4 w-4" /> Numune Ekle</Button>
           </div>
           <Field label="Numune Adı">
-            <input className={input} value={draft.name} onChange={(e) => updateDraft("name", e.target.value)} placeholder="Numune adı" />
+            <input className={input} value={draft.name} onChange={(e) => updateDraft("name", e.target.value)} placeholder="Numune adı" disabled={!canEdit} />
           </Field>
           <div className="mt-3 grid gap-3 lg:grid-cols-2">
             {["smallRoom", "bathroom", "largeRoom", "continuity"].map((field) => (
-              <SampleScoreField key={field} item={draft} field={field} onChange={updateDraft} />
+              <SampleScoreField key={field} item={draft} field={field} onChange={updateDraft} disabled={!canEdit} />
             ))}
           </div>
           <Field label="Notlar">
@@ -2507,6 +3178,7 @@ function SampleTestPage({
               value={draft.notes}
               onChange={(e) => updateDraft("notes", e.target.value)}
               placeholder="Yayılım gözlemleri, kullanıcı hissi..."
+              disabled={!canEdit}
             />
           </Field>
           <div className="mt-3 inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-700">
@@ -2535,6 +3207,7 @@ function SampleTestPage({
                         value={item.name}
                         onChange={(e) => updateEdit(x.id, "name", e.target.value)}
                         placeholder="Numune adı"
+                        disabled={!canEdit}
                       />
                     </Field>
                   </div>
@@ -2547,7 +3220,7 @@ function SampleTestPage({
                 </div>
                 <div className="grid gap-3 lg:grid-cols-2">
                   {["smallRoom", "bathroom", "largeRoom", "continuity"].map((field) => (
-                    <SampleScoreField key={field} item={item} field={field} onChange={(f, v) => updateEdit(x.id, f, v)} />
+                    <SampleScoreField key={field} item={item} field={field} onChange={(f, v) => updateEdit(x.id, f, v)} disabled={!canEdit} />
                   ))}
                 </div>
                 <Field label="Notlar">
@@ -2555,11 +3228,12 @@ function SampleTestPage({
                     className={`${input} mt-3 min-h-20`}
                     value={item.notes}
                     onChange={(e) => updateEdit(x.id, "notes", e.target.value)}
+                    disabled={!canEdit}
                   />
                 </Field>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button onClick={() => onSave(item)}>Kaydet</Button>
-                  <Button variant="outline" className="text-rose-600" onClick={() => onDelete(x.id)}>
+                  <Button onClick={() => onSave(item)} disabled={!canEdit}>Kaydet</Button>
+                  <Button variant="outline" className="text-rose-600" onClick={() => onDelete(x.id)} disabled={!canEdit}>
                     <Trash2 className="h-4 w-4" /> Sil
                   </Button>
                 </div>
@@ -2573,6 +3247,9 @@ function SampleTestPage({
 }
 
 function SampleAnalysisPage({
+  sections,
+  selectedSectionId,
+  onSelectSection,
   sampleTests,
   filtered,
   summary,
@@ -2586,6 +3263,7 @@ function SampleAnalysisPage({
   setMax,
   view,
   setView,
+  canEdit,
   onEditSample,
 }) {
   const categoryMap = sampleDecisionOptions.map((label) => ({
@@ -2600,6 +3278,12 @@ function SampleAnalysisPage({
             <h2 className="text-2xl font-black">Numune Analizi</h2>
           </div>
           <div className="grid gap-2 md:grid-cols-4">
+            <select className={input} value={selectedSectionId || ""} onChange={(e) => onSelectSection(e.target.value || null)}>
+              <option value="">Bölüm seç</option>
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
             <input className={input} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Numune ara" />
             <select className={input} value={decisionFilter} onChange={(e) => setDecisionFilter(e.target.value)}>
               <option>Tümü</option>
@@ -2627,7 +3311,9 @@ function SampleAnalysisPage({
         </div>
       </Card>
 
-      {view === "summary" ? (
+      {!selectedSectionId ? <Empty text="Analiz için önce bir numune bölümü seç." /> : null}
+
+      {selectedSectionId && view === "summary" ? (
         <div className="grid gap-6 lg:grid-cols-2">
           <Card className="p-5 md:p-6">
             <h3 className="mb-4 text-xl font-black">Genel Özet</h3>
@@ -2657,7 +3343,7 @@ function SampleAnalysisPage({
         </div>
       ) : null}
 
-      {view === "ranking" ? (
+      {selectedSectionId && view === "ranking" ? (
         <Card className="p-5 md:p-6">
           <h3 className="mb-4 text-xl font-black">Sıralama</h3>
           <div className="overflow-auto rounded-2xl border border-slate-200">
@@ -2684,7 +3370,7 @@ function SampleAnalysisPage({
         </Card>
       ) : null}
 
-      {view === "category" ? (
+      {selectedSectionId && view === "category" ? (
         <div className="grid gap-4 lg:grid-cols-2">
           {categoryMap.map((cat) => (
             <Card key={cat.label} className="p-5 md:p-6">
@@ -2710,7 +3396,7 @@ function SampleAnalysisPage({
         </div>
       ) : null}
 
-      {view === "table" ? (
+      {selectedSectionId && view === "table" ? (
         <Card className="p-5 md:p-6">
           <h3 className="mb-4 text-xl font-black">Detay Tablo</h3>
           <div className="overflow-auto rounded-2xl border border-slate-200">
@@ -2729,7 +3415,7 @@ function SampleAnalysisPage({
                     <td className="p-3 font-black">{sampleTotal(x)} / 100</td>
                     <td className="p-3"><span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${sampleDecisionTone(sampleTotal(x))}`}>{sampleDecision(sampleTotal(x))}</span></td>
                     <td className="p-3">{x.notes || "-"}</td>
-                    <td className="p-3"><Button variant="outline" onClick={() => onEditSample(x)}>Düzenle</Button></td>
+                    <td className="p-3"><Button variant="outline" onClick={() => onEditSample(x)} disabled={!canEdit}>Düzenle</Button></td>
                   </tr>
                 ))}
               </tbody>
